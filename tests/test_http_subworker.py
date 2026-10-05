@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from aiohttp import web
 from app.client import buildClient as realBuildClient
 from features.http_pack.task import HttpTask, HttpTaskStep, HttpSubworker, PermanentDownloadError, RangeNotSupportedError
 from app.models.task import TaskStatus, TaskError
+from app.network import Network
 from tests.helpers import buildFileContent, buildRangeHandler, runStep
 
 
@@ -292,6 +295,15 @@ class TestReassignment:
         new_sw1_range = sw1.end - old_position + 1
         new_sw2_range = sw2.end - sw2.start + 1
         assert new_sw1_range + new_sw2_range == remaining
+
+    def test_split_takes_finisher_network(self):
+        step = self._makeStepWithSubworkers(fileSize=4_000_000)
+        step.subworkers[0].receivedBytes = 2_000_000
+        step.subworkers[1].network = "wlan0"
+
+        step._reassignSubworker("usb0")
+
+        assert [sw.network for sw in step.subworkers] == ["", "wlan0", "usb0"]
 
     def test_skips_when_below_threshold(self, monkeypatch):
         step = self._makeStepWithSubworkers(fileSize=1000, subworkerCount=2)
@@ -679,6 +691,84 @@ class TestStallRecovery:
 
         assert (tmp_path / "test.bin").read_bytes() == content
         assert deadClient.isClosed
+
+
+class TestNetworks:
+
+    WIFI = Network("wlan0", "Wi-Fi", "192.168.1.5")
+    PHONE = Network("usb0", "iPhone USB", "172.20.10.2")
+
+    @pytest.fixture
+    def subworkerNetworks(self, monkeypatch):
+        """记下每个 Subworker 客户端用的 Network；这些 Network 是假的，客户端实际不绑定。"""
+        names = []
+        deadNames = set()
+
+        class DeadClient:
+            async def get(self, *args, **kwargs):
+                raise ConnectionError("network down")
+
+            def close(self):
+                pass
+
+        def buildClient(*, network=None, **kwargs):
+            if kwargs.get("readTimeout") is not None:
+                names.append(network.name)
+                if network.name in deadNames:
+                    return DeadClient()
+            return realBuildClient(**kwargs)
+
+        monkeypatch.setattr("features.http_pack.task.selectedNetworks", lambda: [self.WIFI, self.PHONE])
+        monkeypatch.setattr("features.http_pack.task.buildClient", buildClient)
+        return names, deadNames
+
+    async def test_subworkers_spread_across_networks(self, server, tmp_path, subworkerNetworks):
+        names, _ = subworkerNetworks
+        content = buildFileContent(4000)
+        url = await server(buildRangeHandler(content))
+        task, step = makeStep(url, tmp_path, fileSize=4000, subworkerCount=4)
+
+        await asyncio.wait_for(runStep(step), timeout=10)
+
+        assert (tmp_path / "test.bin").read_bytes() == content
+        assert Counter(names) == {"wlan0": 2, "usb0": 2}
+
+    async def test_failed_network_hands_subworker_to_next(self, server, tmp_path, subworkerNetworks, monkeypatch):
+        names, deadNames = subworkerNetworks
+        deadNames.add("wlan0")
+        _real_sleep = asyncio.sleep
+
+        async def fast_sleep(n):
+            await _real_sleep(0 if n >= 5 else min(n, 0.01))
+
+        monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+        content = buildFileContent(500)
+        url = await server(buildRangeHandler(content))
+        task, step = makeStep(url, tmp_path, fileSize=500, subworkerCount=1)
+
+        await asyncio.wait_for(runStep(step), timeout=10)
+
+        assert (tmp_path / "test.bin").read_bytes() == content
+        assert names == ["wlan0", "usb0"]
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="127.0.0.2 只在 Linux 的 lo 上默认可用")
+    async def test_requests_leave_from_selected_network(self, server, tmp_path, monkeypatch):
+        content = buildFileContent(1000)
+        rangeHandler = buildRangeHandler(content)
+        remotes = set()
+
+        async def recordRemote(request: web.Request) -> web.Response:
+            remotes.add(request.remote)
+            return await rangeHandler(request)
+
+        monkeypatch.setattr("features.http_pack.task.selectedNetworks", lambda: [Network("lo", "lo", "127.0.0.2")])
+        url = await server(recordRemote)
+        task, step = makeStep(url, tmp_path, fileSize=1000, subworkerCount=2)
+
+        await asyncio.wait_for(runStep(step), timeout=10)
+
+        assert (tmp_path / "test.bin").read_bytes() == content
+        assert remotes == {"127.0.0.2"}
 
 
 class TestInitialStart:

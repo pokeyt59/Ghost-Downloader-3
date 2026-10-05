@@ -120,6 +120,11 @@ _Avoid_: stage、phase、action
 HTTP 或 FTP Step 内的一个分片传输单元，负责一个 byte-range 区间。
 _Avoid_: worker、thread、chunk
 
+**Network**:
+本机一个能独立上网的网络接口——Wi-Fi、网线、USB 共享的手机。Settings 里选中的 Network 分摊 HTTP、FTP 的 Subworker
+和 BT 的对等连接，一个文件同时走多条线路下载；一个都不选时走系统默认路由。
+_Avoid_: interface、adapter、网卡、线路
+
 ### 用户告知
 
 **Notice**:

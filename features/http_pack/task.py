@@ -5,16 +5,19 @@ import errno
 import os
 import time
 from asyncio import TaskGroup, CancelledError
+from collections import Counter
 from contextlib import suppress
 from dataclasses import field, dataclass
 from pathlib import Path
 from struct import unpack, pack
 
 from loguru import logger
+from wreq import Client
 
 from app.client import buildClient, toEmulation
 from app.config.cfg import cfg
 from app.models.task import Task, TaskError, TaskStep, TaskStatus, SpecialFileSize
+from app.network import nextNetwork, selectedNetworks
 from app.platform.sysio import ftruncate, pwrite
 
 STREAM_READ_TIMEOUT = 30
@@ -39,6 +42,7 @@ class HttpSubworker:
     start: int
     end: int
     receivedBytes: int = 0
+    network: str = ""
 
     @property
     def position(self) -> int:
@@ -157,7 +161,7 @@ class HttpTaskStep(TaskStep):
         self.subworkers.insert(self.subworkers.index(slowest) + 1, newSubworker)
         return newSubworker
 
-    def _reassignSubworker(self) -> None:
+    def _reassignSubworker(self, network: str = "") -> None:
         if self.fileSize <= 0:
             return
         slowest = max(self.subworkers, key=lambda sw: sw.end - sw.position + 1)
@@ -165,6 +169,8 @@ class HttpTaskStep(TaskStep):
             return
         newSw = self._splitSlowest()
         if newSw:
+            # 接手刚跑完的 Subworker 的 Network：快的 Network 跑完得早，就能分到更多
+            newSw.network = network
             now = time.monotonic()
             startAt = max(now, self._nextSplitStartAt)
             self._nextSplitStartAt = startAt + SPLIT_START_INTERVAL
@@ -244,11 +250,21 @@ class HttpTaskStep(TaskStep):
             if recordFile is not None:
                 recordFile.close()
 
+    def _createClient(self, subworker: HttpSubworker, hasFailed: bool) -> Client:
+        unfinished = Counter(sw.network for sw in self.subworkers if sw.position <= sw.end)
+        network = nextNetwork(selectedNetworks(), subworker.network, unfinished, hasFailed)
+        subworker.network = network.name if network else ""
+        return buildClient(
+            emulation=self._emulation, userAgent=self.userAgent or None,
+            readTimeout=STREAM_READ_TIMEOUT, network=network,
+        )
+
     async def _runSubworker(self, subworker: HttpSubworker, fd: int, delay: float = 0) -> None:
         await asyncio.sleep(delay)
         if subworker.end == SpecialFileSize.UNKNOWN:
+            hasFailed = False
             while True:
-                client = buildClient(emulation=self._emulation, userAgent=self.userAgent or None, readTimeout=STREAM_READ_TIMEOUT)
+                client = self._createClient(subworker, hasFailed)
                 try:
                     httpPos = self.httpByteOffset + subworker.position
                     headers = {**self._effectiveHeaders, "range": f"bytes={httpPos}-", "accept-encoding": "identity"}
@@ -279,13 +295,15 @@ class HttpTaskStep(TaskStep):
                     if isinstance(e, OSError) and e.errno in FATAL_IO_ERRNO:
                         raise
                     logger.opt(exception=e).error("下载分片失败，将在 5 秒后重试 {}", self.outputPath)
+                    hasFailed = True
                     await asyncio.sleep(5)
                 finally:
                     client.close()
 
         elif subworker.end == SpecialFileSize.NOT_SUPPORTED:
+            hasFailed = False
             while True:
-                client = buildClient(emulation=self._emulation, userAgent=self.userAgent or None, readTimeout=STREAM_READ_TIMEOUT)
+                client = self._createClient(subworker, hasFailed)
                 try:
                     ftruncate(fd, 0)
                     subworker.receivedBytes = 0
@@ -315,13 +333,15 @@ class HttpTaskStep(TaskStep):
                     if isinstance(e, OSError) and e.errno in FATAL_IO_ERRNO:
                         raise
                     logger.opt(exception=e).error("下载分片失败，将在 5 秒后重试 {}", self.outputPath)
+                    hasFailed = True
                     await asyncio.sleep(5)
                 finally:
                     client.close()
 
         else:
+            hasFailed = False
             while subworker.position <= subworker.end:
-                client = buildClient(emulation=self._emulation, userAgent=self.userAgent or None, readTimeout=STREAM_READ_TIMEOUT)
+                client = self._createClient(subworker, hasFailed)
                 try:
                     httpPos = self.httpByteOffset + subworker.position
                     httpEnd = self.httpByteOffset + subworker.end
@@ -365,11 +385,12 @@ class HttpTaskStep(TaskStep):
                     if isinstance(e, OSError) and e.errno in FATAL_IO_ERRNO:
                         raise
                     logger.opt(exception=e).error("下载分片失败，将在 5 秒后重试 {}", self.outputPath)
+                    hasFailed = True
                     await asyncio.sleep(5)
                 finally:
                     client.close()
 
-            self._reassignSubworker()
+            self._reassignSubworker(subworker.network)
 
     async def run(self, reportSpeed, waitForSpeedLimit) -> None:
         self._reportSpeed = reportSpeed
@@ -386,7 +407,11 @@ class HttpTaskStep(TaskStep):
         self._emulation = toEmulation(self.clientProfile or cfg.clientProfile.value, "")
 
         probeHeaders = {**self._effectiveHeaders, "range": "bytes=0-0", "accept-encoding": "identity"}
-        client = buildClient(emulation=self._emulation, userAgent=self.userAgent or None, timeout=30)
+        networks = selectedNetworks()
+        client = buildClient(
+            emulation=self._emulation, userAgent=self.userAgent or None, timeout=30,
+            network=networks[0] if networks else None,
+        )
         try:
             response = await client.get(self.url, headers=probeHeaders)
             self._effectiveUrl = str(response.url)

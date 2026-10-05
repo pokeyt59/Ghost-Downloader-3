@@ -22,6 +22,7 @@ from app.view.components.setting_card_group import CollapsibleSettingCard
 from app.config.cfg import cfg, proxy, currentHeaders, currentHeadersPresetIndex
 from app.i18n import toLocalizedError
 from app.models.task import toTaskError
+from app.network import Network, probeNetworks
 from app.view.components.banners import WarningBanner
 from app.view.components.install_button import InstallButton
 
@@ -762,6 +763,109 @@ class HeadersPresetSettingCard(CollapsibleSettingCard):
             r.radioButton.setChecked(i == newCurrent)
             r.removeButton.setEnabled(canRemove)
         self.choiceLabel.setText(presets[newCurrent]["name"])
+
+
+class NetworkRow(QWidget):
+    toggled = Signal(str, bool)
+
+    def __init__(self, network: Network, isChecked: bool, parent=None):
+        from qfluentwidgets import StrongBodyLabel, SwitchButton
+        super().__init__(parent)
+        self._name = network.name
+
+        self.iconWidget = IconWidget(FluentIcon.WIFI, self)
+        self.nameLabel = StrongBodyLabel(network.label, self)
+        addresses = " · ".join(address for address in (network.ipv4, network.ipv6) if address)
+        self.addressLabel = CaptionLabel(addresses or self.tr("未连接"), self)
+        self.switchButton = SwitchButton(self)
+
+        self._initWidget(isChecked)
+        self._initLayout()
+        self._bind()
+
+    def _initWidget(self, isChecked: bool) -> None:
+        self.iconWidget.setFixedSize(16, 16)
+        self.switchButton.setChecked(isChecked)
+        self.switchButton.setOnText("")
+        self.switchButton.setOffText("")
+
+    def _initLayout(self) -> None:
+        textLayout = QVBoxLayout()
+        textLayout.setContentsMargins(0, 0, 0, 0)
+        textLayout.setSpacing(2)
+        textLayout.addWidget(self.nameLabel)
+        textLayout.addWidget(self.addressLabel)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(48, 12, 24, 12)
+        layout.setSpacing(12)
+        layout.addWidget(self.iconWidget)
+        layout.addLayout(textLayout, 1)
+        layout.addWidget(self.switchButton)
+
+    def _bind(self) -> None:
+        self.switchButton.checkedChanged.connect(lambda checked: self.toggled.emit(self._name, checked))
+
+
+class NetworkSettingCard(CollapsibleSettingCard):
+
+    def __init__(self, parent=None):
+        from qfluentwidgets import PushButton
+        super().__init__(FluentIcon.WIFI, self.tr("多网络下载"),
+                         self.tr("同时用多个网络下载同一个文件，每个网络都要能独立上网"), parent=parent)
+        self._rows: list[NetworkRow] = []
+        self._labels: dict[str, str] = {}
+
+        self.choiceLabel = BodyLabel(self)
+        self.buttonContainer = QWidget(self.view)
+        self.buttonLayout = QHBoxLayout(self.buttonContainer)
+        self.refreshButton = PushButton(FluentIcon.SYNC, self.tr("刷新"), self.buttonContainer)
+
+        self._initWidget()
+        self._initLayout()
+        self._bind()
+
+    def _initWidget(self) -> None:
+        self._refresh()
+
+    def _initLayout(self) -> None:
+        self.addWidget(self.choiceLabel)
+        self.buttonLayout.setContentsMargins(48, 8, 24, 8)
+        self.buttonLayout.addStretch(1)
+        self.buttonLayout.addWidget(self.refreshButton)
+        self.viewLayout.addWidget(self.buttonContainer)
+
+    def _bind(self) -> None:
+        self.refreshButton.clicked.connect(self._refresh)
+        cfg.networks.valueChanged.connect(self._refreshChoiceLabel)
+
+    def _refresh(self) -> None:
+        for row in self._rows:
+            self.viewLayout.removeWidget(row)
+            row.deleteLater()
+        self._rows.clear()
+
+        selected = cfg.networks.value
+        networks = probeNetworks()
+        connected = {network.name for network in networks}
+        networks += [Network(name, name) for name in selected if name not in connected]
+        self._labels = {network.name: network.label for network in networks}
+        for network in networks:
+            row = NetworkRow(network, network.name in selected, self.view)
+            row.toggled.connect(self._onToggled)
+            self.viewLayout.insertWidget(len(self._rows), row)
+            self._rows.append(row)
+        self._refreshChoiceLabel()
+
+    def _refreshChoiceLabel(self) -> None:
+        labels = [self._labels.get(name, name) for name in cfg.networks.value]
+        self.choiceLabel.setText(" + ".join(labels) or self.tr("系统默认"))
+
+    def _onToggled(self, name: str, isChecked: bool) -> None:
+        names = [n for n in cfg.networks.value if n != name]
+        if isChecked:
+            names.append(name)
+        cfg.set(cfg.networks, names)
 
 
 class SelectFileCard(SettingCard):

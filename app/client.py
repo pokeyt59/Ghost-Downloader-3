@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sys
 from datetime import timedelta
+from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,7 @@ from app.config.cfg import cfg, proxy
 if TYPE_CHECKING:
     from collections.abc import Callable
     from wreq import ClientConfig
+    from app.network import Network
 
 FALLBACK_PROFILE = "chrome"
 FETCH_READ_TIMEOUT = 30
@@ -102,11 +104,21 @@ def buildClient(
     sourceUserAgent: str = "",
     timeout: int | None = None,
     readTimeout: int | None = None,
+    network: Network | None = None,
 ) -> Client:
     resolved = toEmulation("") if emulation is ... else emulation
     config: ClientConfig = {"tls_verify": cfg.shouldVerifySsl.value, "redirect": Policy.limited(10)}
     if cfg.shouldUseSystemDns.value:
         config["dns_options"] = DnsOptions(system_dns=True)
+
+    if network is not None:
+        config["local_addresses"] = (
+            IPv4Address(network.ipv4) if network.ipv4 else None,
+            IPv6Address(network.ipv6) if network.ipv6 else None,
+        )
+        # Windows 按源地址选出口，wreq 在 Windows 上也不支持 interface
+        if sys.platform != "win32":
+            config["interface"] = network.name
 
     url = proxy()
     if url:

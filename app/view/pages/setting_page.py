@@ -28,7 +28,7 @@ from app.view.components.setting_card_group import (
 )
 from app.view.components.setting_cards import (
     HeadersPresetSettingCard, IdentitySettingCard, LineEditSettingCard,
-    PercentSpinBoxSettingCard, ProxySettingCard, SpinBoxSettingCard,
+    NetworkSettingCard, PercentSpinBoxSettingCard, ProxySettingCard, SpinBoxSettingCard,
 )
 from app.view.components.editors import FolderPicker
 
@@ -128,6 +128,7 @@ class SettingPage(ScrollArea):
                               self.tr("使用操作系统的 DNS 解析，兼容 TUN、VPN 和代理等网络环境"),
                               cfg.shouldUseSystemDns),
             ProxySettingCard(cfg.proxyServer, featureService=self._featureService),
+            NetworkSettingCard(),
             self.clientProfileCard,
             HeadersPresetSettingCard(),
         ])

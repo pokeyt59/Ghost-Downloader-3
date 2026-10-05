@@ -325,6 +325,7 @@ class Config(QConfig):
     # 网络
     clientProfile = ConfigItem("Network", "ClientProfile", "auto", ClientProfileValidator())
     shouldUseSystemDns = ConfigItem("Network", "ShouldUseSystemDns", True, BoolValidator())
+    networks = ConfigItem("Network", "Networks", [], StringListValidator())
     headersPresets = ConfigItem(
         "Network", "HeadersPresets", [],
         HeadersPresetListValidator(), JsonConfigSerializer(list, list),

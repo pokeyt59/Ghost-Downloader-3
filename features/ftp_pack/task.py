@@ -4,6 +4,7 @@ import asyncio
 import os
 import ssl
 from asyncio import CancelledError
+from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -15,6 +16,7 @@ from loguru import logger
 
 from app.config.cfg import cfg
 from app.models.task import Task, TaskError, TaskStep, TaskFile, TaskStatus, SpecialFileSize
+from app.network import Network, nextNetwork, openConnection, selectedNetworks
 from app.platform.filesystem import toPosixPath
 from app.platform.sysio import ftruncate, pwrite
 FTP_CONNECTION_TIMEOUT = 15
@@ -24,6 +26,27 @@ FTP_RETRY_DELAY = 5
 FTP_DEFAULT_PORT = 21
 FTPS_DEFAULT_PORT = 990
 PROXY_SCHEMES = frozenset({"socks4", "socks5", "socks5h"})
+
+
+class FtpClient(aioftp.Client):
+
+    def __init__(self, *, network: Network | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self.network = network
+
+    # aioftp 只经 siosocks/asyncio 按地址连接，没有把 socket 钉在设备上的入口，只能接管建连
+    async def _open_connection(self, host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if self.network is None:
+            return await super()._open_connection(host, port)
+        sslContext = self.ssl
+        # 数据连接要复用控制连接的 TLS 会话，vsftpd 等服务器默认要求这样（同 aioftp 自身的做法）
+        if self._stream is not None:
+            sslObject = self._stream.writer.transport.get_extra_info("ssl_object")
+            if sslObject is not None:
+                sslContext = aioftp.SSLSessionBoundContext(
+                    ssl.PROTOCOL_TLS_CLIENT, context=sslObject.context, session=sslObject.session,
+                )
+        return await openConnection(host, port, self.network, ssl=sslContext)
 
 
 @dataclass
@@ -36,7 +59,7 @@ class FtpConnectionInfo:
     sourcePath: str
     hasPort: bool = False
 
-    async def connect(self) -> aioftp.Client:
+    async def connect(self, network: Network | None = None) -> aioftp.Client:
         from app.config.cfg import proxy
 
         scheme = self.scheme.lower()
@@ -68,6 +91,8 @@ class FtpConnectionInfo:
                     kwargs["username"] = unquote(parsed.username)
                 if parsed.password:
                     kwargs["password"] = unquote(parsed.password)
+                # 走 SOCKS 代理时连接都去代理，不再挑 Network
+                network = None
 
         lastError: Exception | None = None
         for index, (port, mode) in enumerate(attempts):
@@ -78,8 +103,9 @@ class FtpConnectionInfo:
                     sslCtx.verify_mode = ssl.CERT_NONE
             else:
                 sslCtx = None
-            client = aioftp.Client(
+            client = FtpClient(
                 **kwargs,
+                network=network,
                 ssl=sslCtx if mode == "implicit" else None,
             )
             try:
@@ -106,6 +132,7 @@ class FtpSubworker:
     start: int
     end: int
     receivedBytes: int = 0
+    network: str = ""
 
     @property
     def position(self) -> int:
@@ -210,7 +237,7 @@ class FtpStep(TaskStep):
         except Exception as e:
             logger.opt(exception=e).error("删除进度文件失败 {}", self.recordPath)
 
-    def _reassignSubworker(self) -> None:
+    def _reassignSubworker(self, network: str = "") -> None:
         if self._stopping or self.task.status != TaskStatus.RUNNING or self.fileSize <= 0:
             return
 
@@ -224,10 +251,12 @@ class FtpStep(TaskStep):
         oldEnd = slowest.end
         slowest.end = slowest.position + base + remainder - 1
 
+        # 接手刚跑完的 Subworker 的 Network：快的 Network 跑完得早，就能分到更多
         newSubworker = FtpSubworker(
             index=len(self._subworkers),
             start=slowest.end + 1,
             end=oldEnd,
+            network=network,
         )
         self._subworkers.insert(self._subworkers.index(slowest) + 1, newSubworker)
         self._startSubworkerTask(newSubworker)
@@ -313,15 +342,21 @@ class FtpStep(TaskStep):
         if client is not None:
             client.close()
 
-    async def _runSubworker(self, subworker: FtpSubworker, fd: int) -> None:
+    async def _createClient(self, subworker: FtpSubworker, hasFailed: bool) -> aioftp.Client:
         ftpTask: FtpTask = self.task
+        unfinished = Counter(sw.network for sw in self._subworkers if sw.position <= sw.end)
+        network = nextNetwork(selectedNetworks(), subworker.network, unfinished, hasFailed)
+        subworker.network = network.name if network else ""
+        return await ftpTask.connectionInfo.connect(network)
 
+    async def _runSubworker(self, subworker: FtpSubworker, fd: int) -> None:
+        hasFailed = False
         if subworker.end == SpecialFileSize.UNKNOWN:
             while True:
                 client = None
                 stream = None
                 try:
-                    client = await ftpTask.connectionInfo.connect()
+                    client = await self._createClient(subworker, hasFailed)
                     stream = await client.download_stream(
                         PurePosixPath(self.remotePath),
                         offset=subworker.position,
@@ -338,6 +373,7 @@ class FtpStep(TaskStep):
                     if self._stopping or self.task.status != TaskStatus.RUNNING:
                         raise CancelledError
                     logger.opt(exception=e).error("{} 的未知大小分片连接中断，5 秒后重试", self.outputPath)
+                    hasFailed = True
                     await asyncio.sleep(FTP_RETRY_DELAY)
                 finally:
                     self._closeTransfer(client, stream)
@@ -347,7 +383,7 @@ class FtpStep(TaskStep):
                 client = None
                 stream = None
                 try:
-                    client = await ftpTask.connectionInfo.connect()
+                    client = await self._createClient(subworker, hasFailed)
                     stream = await client.download_stream(PurePosixPath(self.remotePath))
                     ftruncate(fd, 0)
                     subworker.receivedBytes = 0
@@ -364,6 +400,7 @@ class FtpStep(TaskStep):
                     if self._stopping or self.task.status != TaskStatus.RUNNING:
                         raise CancelledError
                     logger.opt(exception=e).error("{} 不支持断点续传，已从头开始重试", self.outputPath)
+                    hasFailed = True
                     await asyncio.sleep(FTP_RETRY_DELAY)
                 finally:
                     self._closeTransfer(client, stream)
@@ -373,7 +410,7 @@ class FtpStep(TaskStep):
                 client = None
                 stream = None
                 try:
-                    client = await ftpTask.connectionInfo.connect()
+                    client = await self._createClient(subworker, hasFailed)
                     stream = await client.download_stream(
                         PurePosixPath(self.remotePath),
                         offset=subworker.position,
@@ -394,6 +431,7 @@ class FtpStep(TaskStep):
                     if self._stopping or self.task.status != TaskStatus.RUNNING:
                         raise CancelledError
                     logger.opt(exception=e).error("{} 的分片连接中断，5 秒后重试", self.outputPath)
+                    hasFailed = True
                     await asyncio.sleep(FTP_RETRY_DELAY)
                 finally:
                     self._closeTransfer(client, stream)
@@ -401,7 +439,7 @@ class FtpStep(TaskStep):
             if subworker.position > subworker.end:
                 subworker.receivedBytes = subworker.end - subworker.start + 1
 
-            self._reassignSubworker()
+            self._reassignSubworker(subworker.network)
 
     def _startSubworkerTask(self, subworker: FtpSubworker):
         if self._stopping:

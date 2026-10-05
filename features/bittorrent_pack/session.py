@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from base64 import b64decode, b64encode
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ from loguru import logger
 
 from app.config.cfg import cfg, proxy
 from app.models.task import TaskError
+from app.network import selectedNetworks
 
 from .config import bittorrentConfig
 from .swarm import PeerInfo, SwarmInfo, TrackerInfo, toPeers, toSourceTrackers, toSwarmInfo, toTracker
@@ -120,6 +122,7 @@ class BTSession:
         ):
             item.valueChanged.connect(self._onLimitChanged)
         cfg.proxyServer.valueChanged.connect(self._onProxyChanged)
+        cfg.networks.valueChanged.connect(self._onNetworksChanged)
 
     # ── public interface ──
 
@@ -324,6 +327,7 @@ class BTSession:
                 "enable_natpmp": True,
                 "alert_mask": ALERT_MASK,
                 **self._proxySettings(),
+                **self._networkSettings(),
             }
             self._session = lt.session(params)
         if self._poller is None or self._poller.done():
@@ -575,6 +579,11 @@ class BTSession:
             settings or {"proxy_type": lt.proxy_type_t.none}
         )
 
+    def _onNetworksChanged(self, _value=None) -> None:
+        if self._session is None:
+            return
+        self._session.apply_settings(self._networkSettings())
+
     def _downloadLimit(self) -> int:
         if not cfg.isSpeedLimitEnabled.value:
             return 0
@@ -599,6 +608,16 @@ class BTSession:
             "proxy_tracker_connections": True,
             "force_proxy": False,
         }
+
+    def _networkSettings(self) -> dict:
+        networks = selectedNetworks()
+        # Linux 要把连接钉在设备上。macOS、Windows 按源地址就能选出口，而 Windows 上 libtorrent 认的设备名
+        # 和 Qt 的对不上，所以用 IPv4 地址，代价是只连得上 IPv4 对等方
+        if sys.platform == "linux":
+            interfaces = [network.name for network in networks]
+        else:
+            interfaces = [network.ipv4 for network in networks if network.ipv4]
+        return {"outgoing_interfaces": ",".join(interfaces)}
 
 
 btSession = BTSession()
