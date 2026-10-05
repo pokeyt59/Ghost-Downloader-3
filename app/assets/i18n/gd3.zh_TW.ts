@@ -3241,6 +3241,37 @@ FFmpeg: {2}</translation>
         </message>
     </context>
     <context>
+        <name>NetworkRow</name>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="779" />
+            <source>未连接</source>
+            <translation>未連線</translation>
+        </message>
+    </context>
+    <context>
+        <name>NetworkSettingCard</name>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="814" />
+            <source>多网络下载</source>
+            <translation>多網路下載</translation>
+        </message>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="815" />
+            <source>同时用多个网络下载同一个文件，每个网络都要能独立上网</source>
+            <translation>同時用多個網路下載同一個檔案，每個網路都要能獨立上網</translation>
+        </message>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="822" />
+            <source>刷新</source>
+            <translation>重新整理</translation>
+        </message>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="862" />
+            <source>系统默认</source>
+            <translation>系統預設</translation>
+        </message>
+    </context>
+    <context>
         <name>Notifications</name>
         <message>
             <location filename="../../platform/android_notification.py" line="41" />

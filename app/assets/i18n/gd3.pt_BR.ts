@@ -2577,6 +2577,37 @@ Permita apenas se você acabou de clicar em "Emparelhamento automático" na exte
         </message>
     </context>
     <context>
+        <name>NetworkRow</name>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="779" />
+            <source>未连接</source>
+            <translation>Desconectada</translation>
+        </message>
+    </context>
+    <context>
+        <name>NetworkSettingCard</name>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="814" />
+            <source>多网络下载</source>
+            <translation>Download multirrede</translation>
+        </message>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="815" />
+            <source>同时用多个网络下载同一个文件，每个网络都要能独立上网</source>
+            <translation>Baixa um arquivo por várias redes ao mesmo tempo; cada rede precisa da própria conexão com a internet</translation>
+        </message>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="822" />
+            <source>刷新</source>
+            <translation>Atualizar</translation>
+        </message>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="862" />
+            <source>系统默认</source>
+            <translation>Padrão do sistema</translation>
+        </message>
+    </context>
+    <context>
         <name>Notifications</name>
         <message>
             <location filename="../../platform/android_notification.py" line="41" />

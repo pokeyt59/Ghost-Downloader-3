@@ -3241,6 +3241,37 @@ FFmpeg: {2}</translation>
         </message>
     </context>
     <context>
+        <name>NetworkRow</name>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="779" />
+            <source>未连接</source>
+            <translation>Не подключена</translation>
+        </message>
+    </context>
+    <context>
+        <name>NetworkSettingCard</name>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="814" />
+            <source>多网络下载</source>
+            <translation>Загрузка через несколько сетей</translation>
+        </message>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="815" />
+            <source>同时用多个网络下载同一个文件，每个网络都要能独立上网</source>
+            <translation>Загружает один файл сразу через несколько сетей; у каждой сети должен быть свой выход в интернет</translation>
+        </message>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="822" />
+            <source>刷新</source>
+            <translation>Обновить</translation>
+        </message>
+        <message>
+            <location filename="../../view/components/setting_cards.py" line="862" />
+            <source>系统默认</source>
+            <translation>Системная по умолчанию</translation>
+        </message>
+    </context>
+    <context>
         <name>Notifications</name>
         <message>
             <location filename="../../platform/android_notification.py" line="41" />
