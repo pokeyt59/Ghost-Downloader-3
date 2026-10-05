@@ -346,7 +346,11 @@ class FtpStep(TaskStep):
         ftpTask: FtpTask = self.task
         unfinished = Counter(sw.network for sw in self._subworkers if sw.position <= sw.end)
         network = nextNetwork(selectedNetworks(), subworker.network, unfinished, hasFailed)
-        subworker.network = network.name if network else ""
+        name = network.name if network else ""
+        if name != subworker.network:
+            logger.info("{} 的分片 {} 改用 {}", self.outputPath, subworker.index,
+                        f"{network.label}（{network.name}）" if network else "默认路由")
+        subworker.network = name
         return await ftpTask.connectionInfo.connect(network)
 
     async def _runSubworker(self, subworker: FtpSubworker, fd: int) -> None:

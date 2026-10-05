@@ -617,7 +617,9 @@ class BTSession:
             interfaces = [network.name for network in networks]
         else:
             interfaces = [network.ipv4 for network in networks if network.ipv4]
-        return {"outgoing_interfaces": ",".join(interfaces)}
+        outgoing = ",".join(interfaces)
+        logger.info("BT 对等连接出口：{}", outgoing or "默认路由")
+        return {"outgoing_interfaces": outgoing}
 
 
 btSession = BTSession()

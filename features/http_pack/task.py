@@ -253,7 +253,11 @@ class HttpTaskStep(TaskStep):
     def _createClient(self, subworker: HttpSubworker, hasFailed: bool) -> Client:
         unfinished = Counter(sw.network for sw in self.subworkers if sw.position <= sw.end)
         network = nextNetwork(selectedNetworks(), subworker.network, unfinished, hasFailed)
-        subworker.network = network.name if network else ""
+        name = network.name if network else ""
+        if name != subworker.network:
+            logger.info("{} 的分片 {} 改用 {}", self.outputPath, subworker.index,
+                        f"{network.label}（{network.name}）" if network else "默认路由")
+        subworker.network = name
         return buildClient(
             emulation=self._emulation, userAgent=self.userAgent or None,
             readTimeout=STREAM_READ_TIMEOUT, network=network,
